@@ -1,0 +1,55 @@
+{
+  "name": "AI Customer Support Chatbot with Order Negotiation",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract user message from webhook\nconst userMessage = $input.first().json.body.chatInput;\nconst sessionId = $input.first().json.headers['x-session-id'] || Date.now().toString();\n\nreturn [{\n  json: {\n    userMessage: userMessage,\n    sessionId: sessionId,\n    timestamp: new Date().toISOString(),\n    negotiationState: $input.first().json.body.negotiationState || 'none'\n  }\n}];"
+      },
+      "id": "prepare-input",
+      "name": "Prepare Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract intent and clean response\nconst aiResponse = $input.first().json.message?.content || $input.first().json.text;\nconst intent = detectIntent(aiResponse);\nconst cleanedResponse = cleanOutput(aiResponse);\n\nfunction detectIntent(text) {\n  if (text.includes('ORDER_CONFIRMED')) return 'order';\n  if (text.includes('CANCELLED')) return 'cancel';\n  if (text.includes('BOOKING_CONFIRMED') || text.includes('SESSION_CONFIRMED')) return 'booking';\n  if (text.includes('PRICE_NEGOTIATION')) return 'negotiation';\n  return 'general';\n}\n\nfunction cleanOutput(text) {\n  // Remove markdown and extra whitespace\n  return text\n    .replace(/[*_#`]/g, '')\n    .replace(/\\s+/g, ' ')\n    .replace(/ORDER_CONFIRMED:|CANCELLED:|SESSION_CONFIRMED:/g, '')\n    .trim();\n}\n\nreturn [{\n  json: {\n    ...$input.first().json,\n    intent: intent,\n    cleanedResponse: cleanedResponse,\n    rawResponse: aiResponse\n  }\n}];"
+      },
+      "id": "parse-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.intent }}",
+              "operation": "equals",
+              "value2": "order"
+            }
+          ]
+        }
+      },
+      "id": "intent-router",
+      "name": "Intent Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    }
+  ]
+}
