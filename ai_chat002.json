@@ -3,11 +3,11 @@
   "nodes": [
     {
       "parameters": {
-        "path": "chat",
+        "path": "webhook",
         "responseMode": "responseNode",
         "options": {}
       },
-      "id": "webhook",
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
@@ -15,9 +15,9 @@
     },
     {
       "parameters": {
-        "jsCode": "// Extract user message from webhook\nconst userMessage = $input.first().json.body.chatInput;\nconst sessionId = $input.first().json.headers['x-session-id'] || Date.now().toString();\n\nreturn [{\n  json: {\n    userMessage: userMessage,\n    sessionId: sessionId,\n    timestamp: new Date().toISOString(),\n    negotiationState: $input.first().json.body.negotiationState || 'none'\n  }\n}];"
+        "jsCode": "// Get the incoming message\nconst body = $input.first().json.body;\nconst userMessage = body.chatInput || body.message || '';\n\n// Generate or get session ID\nconst sessionId = body.sessionId || `SESS_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\n\n// Track negotiation state (stored in session)\nconst negotiationState = body.negotiationState || {\n  stage: 'none', // none, collecting, negotiating, confirming\n  orderData: {},\n  negotiationCount: 0,\n  bestPrice: null\n};\n\nreturn [{\n  json: {\n    userMessage: userMessage,\n    sessionId: sessionId,\n    timestamp: new Date().toISOString(),\n    negotiationState: negotiationState\n  }\n}];"
       },
-      "id": "prepare-input",
+      "id": "b2c3d4e5-f6g7-8901-bcde-fg2345678901",
       "name": "Prepare Input",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -25,9 +25,32 @@
     },
     {
       "parameters": {
-        "jsCode": "// Extract intent and clean response\nconst aiResponse = $input.first().json.message?.content || $input.first().json.text;\nconst intent = detectIntent(aiResponse);\nconst cleanedResponse = cleanOutput(aiResponse);\n\nfunction detectIntent(text) {\n  if (text.includes('ORDER_CONFIRMED')) return 'order';\n  if (text.includes('CANCELLED')) return 'cancel';\n  if (text.includes('BOOKING_CONFIRMED') || text.includes('SESSION_CONFIRMED')) return 'booking';\n  if (text.includes('PRICE_NEGOTIATION')) return 'negotiation';\n  return 'general';\n}\n\nfunction cleanOutput(text) {\n  // Remove markdown and extra whitespace\n  return text\n    .replace(/[*_#`]/g, '')\n    .replace(/\\s+/g, ' ')\n    .replace(/ORDER_CONFIRMED:|CANCELLED:|SESSION_CONFIRMED:/g, '')\n    .trim();\n}\n\nreturn [{\n  json: {\n    ...$input.first().json,\n    intent: intent,\n    cleanedResponse: cleanedResponse,\n    rawResponse: aiResponse\n  }\n}];"
+        "model": "gpt-3.5-turbo",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a helpful sales assistant for 'Tasty Pizzas' - a pizza delivery restaurant. Your job is to take orders, answer questions, and handle price negotiations.\n\nMENU:\n- Pepperoni Pizza: $15.99\n- Margherita Pizza: $13.99\n- Vegetarian Pizza: $16.99\n- Hawaiian Pizza: $17.99\n- Extra Cheese: $2.00\n- Soft Drinks: $2.50\n\nNEGOTIATION RULES:\n1. If customer says price is too high or asks for discount, offer 10% off on first pushback\n2. If they still refuse, offer 15% off on second pushback\n3. Maximum discount allowed is 15%\n4. If they ask for more than 15%, politely explain that's the maximum and suggest they can still order at regular price\n\nORDER COLLECTION:\nCollect these details in order: Product name, Quantity, Customer Name, Phone number, Delivery address\n\nOUTPUT FORMAT:\n- For normal conversation: Plain text only\n- For order confirmation (only after user says 'yes' or 'confirm'): ORDER_CONFIRMED | Product: [name] | Quantity: [number] | Name: [name] | Phone: [phone] | Address: [address] | Total: [price] END_ORDER\n- For cancellation: CANCELLED | Reason: [reason] END_CANCELLED\n- For negotiation: NEGOTIATION | Offer: [discount_percentage] | NewPrice: [price] END_NEGOTIATION\n\nKeep responses friendly but concise. Ask for one piece of information at a time when collecting order details."
+            },
+            {
+              "role": "user",
+              "content": "={{ $json.userMessage }}"
+            }
+          ]
+        },
+        "options": {}
       },
-      "id": "parse-response",
+      "id": "c3d4e5f6-g7h8-9012-cdef-gh3456789012",
+      "name": "OpenAI Chat",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get AI response\nconst aiResponse = $input.first().json.message?.content || $input.first().json.choices?.[0]?.message?.content || '';\n\n// Extract intent and data\nlet intent = 'general';\nlet status = 'pending';\nlet orderData = {};\nlet cleanedResponse = aiResponse;\nlet discountOffered = null;\nlet newPrice = null;\n\n// Check for ORDER_CONFIRMED\nif (aiResponse.includes('ORDER_CONFIRMED')) {\n  intent = 'order';\n  status = 'confirmed';\n  \n  // Extract order details\n  const productMatch = aiResponse.match(/Product: ([^|]+)/);\n  const quantityMatch = aiResponse.match(/Quantity: ([^|]+)/);\n  const nameMatch = aiResponse.match(/Name: ([^|]+)/);\n  const phoneMatch = aiResponse.match(/Phone: ([^|]+)/);\n  const addressMatch = aiResponse.match(/Address: ([^|]+)/);\n  const totalMatch = aiResponse.match(/Total: \\$?([^|]+)/);\n  \n  orderData = {\n    product: productMatch ? productMatch[1].trim() : '',\n    quantity: quantityMatch ? quantityMatch[1].trim() : '',\n    name: nameMatch ? nameMatch[1].trim() : '',\n    phone: phoneMatch ? phoneMatch[1].trim() : '',\n    address: addressMatch ? addressMatch[1].trim() : '',\n    total: totalMatch ? totalMatch[1].trim() : ''\n  };\n  \n  cleanedResponse = aiResponse.replace(/ORDER_CONFIRMED[\\s\\S]*?END_ORDER/g, '').trim();\n}\n\n// Check for CANCELLED\nelse if (aiResponse.includes('CANCELLED')) {\n  intent = 'cancel';\n  status = 'cancelled';\n  const reasonMatch = aiResponse.match(/Reason: ([^|]+)/);\n  orderData = { reason: reasonMatch ? reasonMatch[1].trim() : 'User cancelled' };\n  cleanedResponse = aiResponse.replace(/CANCELLED[\\s\\S]*?END_CANCELLED/g, '').trim();\n}\n\n// Check for NEGOTIATION\nelse if (aiResponse.includes('NEGOTIATION')) {\n  intent = 'negotiation';\n  status = 'negotiating';\n  const offerMatch = aiResponse.match(/Offer: ([^|]+)/);\n  const priceMatch = aiResponse.match(/NewPrice: \\$?([^|]+)/);\n  orderData = {\n    discount: offerMatch ? offerMatch[1].trim() : '',\n    newPrice: priceMatch ? priceMatch[1].trim() : ''\n  };\n  cleanedResponse = aiResponse.replace(/NEGOTIATION[\\s\\S]*?END_NEGOTIATION/g, '').trim();\n}\n\n// Check for booking intent\nelse if (aiResponse.toLowerCase().includes('book') || aiResponse.toLowerCase().includes('appointment')) {\n  intent = 'booking';\n}\n\n// Clean the response (remove markdown, extra spaces)\ncleanedResponse = cleanedResponse\n  .replace(/[*_#`]/g, '')\n  .replace(/\\s+/g, ' ')\n  .replace(/\\|/g, ',')\n  .trim();\n\n// If cleanedResponse is empty after removing tags, use a default\nif (!cleanedResponse) {\n  cleanedResponse = aiResponse.replace(/ORDER_CONFIRMED|CANCELLED|NEGOTIATION|END_ORDER|END_CANCELLED|END_NEGOTIATION/g, '').trim();\n}\n\nreturn [{\n  json: {\n    ...$input.first().json,\n    aiReply: aiResponse,\n    cleanedReply: cleanedResponse,\n    intent: intent,\n    status: status,\n    orderData: JSON.stringify(orderData),\n    product: orderData.product || '',\n    quantity: orderData.quantity || '',\n    customerName: orderData.name || '',\n    phone: orderData.phone || '',\n    address: orderData.address || ''\n  }\n}];"
+      },
+      "id": "d4e5f6g7-h8i9-0123-defg-4567890123",
       "name": "Parse AI Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -36,6 +59,9 @@
     {
       "parameters": {
         "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
           "string": [
             {
               "value1": "={{ $json.intent }}",
@@ -45,11 +71,298 @@
           ]
         }
       },
-      "id": "intent-router",
+      "id": "e5f6g7h8-i9j0-1234-efgh-5678901234",
       "name": "Intent Router",
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "string": [
+            {
+              "value1": "={{ $json.intent }}",
+              "operation": "equals",
+              "value2": "negotiation"
+            }
+          ]
+        }
+      },
+      "id": "f6g7h8i9-j0k1-2345-fghi-6789012345",
+      "name": "Negotiation Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
       "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "string": [
+            {
+              "value1": "={{ $json.intent }}",
+              "operation": "equals",
+              "value2": "cancel"
+            }
+          ]
+        }
+      },
+      "id": "g7h8i9j0-k1l2-3456-ghij-7890123456",
+      "name": "Cancel Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle order confirmation branch\nconst input = $input.first().json;\n\n// You could add additional logic here like sending confirmation emails\nconsole.log('Order confirmed:', input.orderData);\n\nreturn [{\n  json: {\n    ...input,\n    branch: 'order_confirmed',\n    processedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "h8i9j0k1-l2m3-4567-hijk-8901234567",
+      "name": "Order Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2",
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle negotiation branch\nconst input = $input.first().json;\n\n// Track negotiation count (you would store this in a real session)\nconsole.log('Negotiation in progress:', input.orderData);\n\nreturn [{\n  json: {\n    ...input,\n    branch: 'negotiation',\n    processedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "i9j0k1l2-m3n4-5678-ijkl-9012345678",
+      "name": "Negotiation Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle cancellation branch\nconst input = $input.first().json;\n\n// Clear any stored order data\nconsole.log('Order cancelled:', input.orderData);\n\nreturn [{\n  json: {\n    ...input,\n    branch: 'cancelled',\n    processedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "j0k1l2m3-n4o5-6789-jklm-0123456789",
+      "name": "Cancel Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge all branches back together\nconst input = $input.first().json;\n\nreturn [{\n  json: input\n}];"
+      },
+      "id": "k1l2m3n4-o5p6-7890-klmn-1234567890",
+      "name": "Merge Branches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "sheetId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": "Sheet1",
+        "columns": [
+          "Timestamp",
+          "SessionID",
+          "UserMessage",
+          "AIReply",
+          "Intent",
+          "Status",
+          "Product",
+          "Quantity",
+          "Name",
+          "Phone",
+          "Address",
+          "OrderData"
+        ],
+        "dataMode": "autoMapInputData",
+        "options": {}
+      },
+      "id": "l2m3n4o5-p6q7-8901-lmno-2345678901",
+      "name": "Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare final webhook response\nconst input = $input.first().json;\n\n// Create clean JSON response\nconst response = {\n  reply: input.cleanedReply || input.aiReply || 'No response generated',\n  intent: input.intent || 'general',\n  status: input.status || 'completed',\n  sessionId: input.sessionId,\n  timestamp: new Date().toISOString()\n};\n\n// Add order data if present\nif (input.orderData && input.orderData !== '{}') {\n  try {\n    response.orderDetails = JSON.parse(input.orderData);\n  } catch (e) {\n    response.orderDetails = input.orderData;\n  }\n}\n\nreturn [{\n  json: response\n}];"
+      },
+      "id": "m3n4o5p6-q7r8-9012-mnop-3456789012",
+      "name": "Prepare Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "n4o5p6q7-r8s9-0123-nopq-4567890123",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2050, 300]
     }
-  ]
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Input": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Intent Router",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Negotiation Router",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cancel Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Router": {
+      "main": [
+        [
+          {
+            "node": "Order Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Negotiation Router": {
+      "main": [
+        [
+          {
+            "node": "Negotiation Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Router": {
+      "main": [
+        [
+          {
+            "node": "Cancel Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order Handler": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Negotiation Handler": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Handler": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Branches": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Prepare Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
 }
