@@ -1,0 +1,158 @@
+{
+  "name": "ai chatboot",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chatbot",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-480, 0],
+      "id": "webhook",
+      "name": "Webhook"
+    },
+    {
+      "parameters": {
+        "messages": {
+          "values": [
+            {
+              "content": "=={{ $json.body.message }}"
+            },
+            {
+              "role": "system",
+              "content": "You are a sales and support assistant.\n\nRules:\n1. Detect intent: order / booking / inquiry / cancel\n2. Collect order details: Product, Quantity, Name, Phone, Address\n3. Handle price negotiation: if user says price is too high, offer 10% discount\n4. Ask for explicit confirmation (\"yes\", \"confirm\", \"ok\") before confirming order\n5. If user cancels, acknowledge and set status = cancelled\n\nAlways respond in this exact structured format:\n\nORDER_CONFIRMED: {\n  \"Product\": \"Laptop\",\n  \"Quantity\": 2,\n  \"Name\": \"Sayed\",\n  \"Phone\": \"0123456\",\n  \"Address\": \"Sylhet\",\n  \"Price\": 900\n}\n\nCANCELLED_ORDER: { \"Reason\": \"User cancelled\" }\n\nGENERAL_INQUIRY: \"Your question answered here\""
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [-256, 0],
+      "id": "openai",
+      "name": "Create a conversation",
+      "credentials": {
+        "openAiApi": {
+          "id": "v06rStYO7W48hRFK",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI response and return structured JSON\nconst raw = $json.messages?.[0]?.content || $json.output || \"\";\n\nlet intent = $json.intent || \"inquiry\";\nlet status = $json.status || \"pending\";\nlet orderData = null;\n\nif (raw.includes(\"ORDER_CONFIRMED\")) {\n  const match = raw.match(/ORDER_CONFIRMED:\\s*(\\{[\\s\\S]*?\\})/);\n  if (match) { orderData = JSON.parse(match[1]); intent = \"order\"; status = \"confirmed\"; }\n} else if (raw.includes(\"CANCELLED_ORDER\")) { intent = \"cancel\"; status = \"cancelled\"; }\n\nconst reply = raw.replace(/ORDER_CONFIRMED:\\s*\\{[\\s\\S]*?\\}/, \"\").replace(/CANCELLED_ORDER:\\s*\\{[\\s\\S]*?\\}/, \"\").replace(/[\\]\\}\\{\\\"\\[\\]]+/g, \"\").replace(/\\s+/g, \" \").trim() || \"How can I assist you today?\";\n\nreturn [{ json: {\n  Timestamp: new Date().toISOString(),\n  SessionID: $json.sessionId || \"session_\"+Date.now(),\n  UserMessage: $json.chatInput || $json.body.message || \"\",\n  AIReply: reply,\n  Intent: intent,\n  Status: status,\n  Product: orderData?.Product || \"unknown\",\n  Quantity: orderData?.Quantity || 1,\n  Name: orderData?.Name || \"Customer\",\n  Phone: orderData?.Phone || \"N/A\",\n  Address: orderData?.Address || \"N/A\"\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-32, 0],
+      "id": "parseAI",
+      "name": "Parse AI reply"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.Intent}}", "operator": { "type": "string", "operation": "equals" }, "rightValue": "order" }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.Intent}}", "operator": { "type": "string", "operation": "equals" }, "rightValue": "inquiry" }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.Intent}}", "operator": { "type": "string", "operation": "equals" }, "rightValue": "cancel" }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [192, -32],
+      "id": "switchIntent",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            { "leftValue": "={{$json.status}}", "operator": { "type": "string", "operation": "equals" }, "rightValue": "confirmed" }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [416, -32],
+      "id": "ifConfirmed",
+      "name": "If Status = confirmed"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "1Y3S2L2OLCo1KjZyAZ8Oi4KqsCGvpIjsv2YFpyHVdE08",
+        "sheetName": "Sheet1",
+        "columns": { "mappingMode": "autoMapInputData" }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [640, -32],
+      "id": "sheetConfirmed",
+      "name": "Append row confirmed"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "1Y3S2L2OLCo1KjZyAZ8Oi4KqsCGvpIjsv2YFpyHVdE08",
+        "sheetName": "Sheet1",
+        "columns": { "mappingMode": "autoMapInputData" }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [640, 96],
+      "id": "sheetOthers",
+      "name": "Append row others"
+    },
+    {
+      "parameters": {
+        "options": { "responseCode": 200, "responseKey": "={\"reply\":\"{{$json.AIReply}}\",\"intent\":\"{{$json.Intent}}\",\"status\":\"{{$json.Status}}\"}" }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [864, 0],
+      "id": "respondWebhook",
+      "name": "Respond to Webhook"
+    }
+  ],
+  "connections": {
+    "webhook": { "main": [[{"node": "openai","type":"main","index":0}]] },
+    "openai": { "main": [[{"node": "parseAI","type":"main","index":0}]] },
+    "parseAI": { "main": [[{"node": "switchIntent","type":"main","index":0}]] },
+    "switchIntent": {
+      "main": [
+        [{"node": "ifConfirmed","type":"main","index":0}],
+        [{"node": "sheetOthers","type":"main","index":1}],
+        [{"node": "sheetOthers","type":"main","index":2}]
+      ]
+    },
+    "ifConfirmed": { "main": [[{"node": "sheetConfirmed","type":"main","index":0}]] },
+    "sheetConfirmed": { "main": [[{"node": "respondWebhook","type":"main","index":0}]] },
+    "sheetOthers": { "main": [[{"node": "respondWebhook","type":"main","index":0}]] }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1", "binaryMode": "separate" }
+}
